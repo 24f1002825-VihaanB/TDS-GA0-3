@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from pathlib import Path
 import json
@@ -17,7 +16,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load telemetry data
+# Force CORS headers on every response
+@app.middleware("http")
+async def force_cors(request, call_next):
+    response = await call_next(request)
+
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+
+    return response
+
+
+# Load telemetry JSON
 DATA_FILE = Path(__file__).parent.parent / "q-vercel-latency.json"
 
 with open(DATA_FILE, encoding="utf-8") as f:
@@ -29,11 +40,12 @@ class RequestBody(BaseModel):
     threshold_ms: int
 
 
+# Preflight handler
 @app.options("/api/latency")
 def options_handler():
-    response = Response()
+    response = Response(status_code=200)
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
@@ -45,14 +57,9 @@ def analytics(body: RequestBody):
 
     for region in body.regions:
 
-        rows = [
-            r for r in telemetry
-            if r["region"] == region
-        ]
+        rows = [r for r in telemetry if r["region"] == region]
 
         latencies = [r["latency_ms"] for r in rows]
-
-        # IMPORTANT
         uptimes = [r["uptime_pct"] for r in rows]
 
         result[region] = {
@@ -60,21 +67,9 @@ def analytics(body: RequestBody):
             "p95_latency": round(float(np.percentile(latencies, 95)), 2),
             "avg_uptime": round(float(np.mean(uptimes)), 3),
             "breaches": sum(
-                1
-                for x in latencies
+                1 for x in latencies
                 if x > body.threshold_ms
             )
         }
 
-    return JSONResponse(
-        content=result,
-        headers={
-            "Access-Control-Allow-Origin": "*"
-        }
-    )
-
-@app.middleware("http")
-async def add_cors_header(request, call_next):
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    return response
+    return result
